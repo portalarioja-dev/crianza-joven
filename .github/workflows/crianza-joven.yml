@@ -30,6 +30,6 @@ jobs:
         env:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
-          GITHUB_JSON_PATH: ${{ secrets.GITHUB_JSON_PATH }}
+          GITHUB_REPO: ${{ secrets.CJ_REPO }}
+          GITHUB_JSON_PATH: ${{ secrets.CJ_JSON_PATH }}
         run: python generar_playlist_crianza_joven.py
