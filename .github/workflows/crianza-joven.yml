@@ -1,0 +1,35 @@
+# .github/workflows/crianza-joven.yml
+#
+# Ejecuta generar_playlist_crianza_joven.py cada 15 minutos, para siempre,
+# sin que tengas que tocar nada. El propio script decide si toca barajar
+# de nuevo o no hacer nada (para no gastar cuota sin necesidad).
+#
+# También puedes lanzarlo tú mismo a mano en cualquier momento desde la
+# pestaña "Actions" de GitHub > "Crianza Joven" > "Run workflow".
+
+name: Crianza Joven
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # cada 15 minutos
+  workflow_dispatch: {}       # permite lanzarlo a mano desde GitHub
+
+jobs:
+  barajar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ejecutar el script
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
+          GITHUB_JSON_PATH: ${{ secrets.GITHUB_JSON_PATH }}
+        run: python scripts/generar_playlist_crianza_joven.py
