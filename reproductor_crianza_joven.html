@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crianza Joven — Radio</title>
+<!--
+  ============================================================
+  REPRODUCTOR "CRIANZA JOVEN" — página independiente
+  ============================================================
+
+  CÓMO USARLO:
+  Esta es ahora una página completa, pensada para vivir en tu propio
+  GitHub Pages (no se pega dentro de Blogger). En Blogger solo pones
+  un botón sencillo que abre esta página en una ventana nueva —
+  ese botón es el archivo "boton_crianza_joven.html".
+
+  Sube este archivo (reproductor_crianza_joven.html) a tu repositorio
+  crianza-joven, activa GitHub Pages (Settings > Pages), y quedará
+  accesible en una dirección como:
+    https://portalarioja-dev.github.io/crianza-joven/reproductor_crianza_joven.html
+
+  QUÉ HACE:
+  - Muestra tu logo como botón de play.
+  - Al pulsar: suena entera tu cortinilla (solo para esa persona).
+  - En cuanto termina, calcula en qué segundo exacto debería estar sonando
+    la radio ahora mismo (según playlist.json) y se engancha ahí, igual
+    que todos los demás oyentes, sin importar a qué hora haya pulsado play.
+  - Solo se oye el audio: el reproductor de YouTube queda oculto.
+  - Debajo del botón se muestra el título de la canción que suena.
+  ============================================================
+-->
+<style>
+  html, body { height: 100%; margin: 0; background: #0d0d0f; }
+  body { display: flex; align-items: center; justify-content: center; }
+</style>
+</head>
+<body>
+
+<div id="cj-widget" style="font-family:inherit;max-width:280px;text-align:center;margin:0 auto;color:#f2f2f2;">
+
+  <button id="cj-play-btn" style="border:none;background:none;padding:0;cursor:pointer;">
+    <img id="cj-logo"
+         src="https://raw.githubusercontent.com/portalarioja-dev/crianza-joven/main/Crianza%20Joven.png"
+         alt="Reproducir Crianza Joven"
+         style="width:180px;height:180px;border-radius:50%;display:block;margin:0 auto;" />
+  </button>
+
+  <div id="cj-status" style="margin-top:10px;font-size:14px;opacity:0.8;">
+    Pulsa para escuchar
+  </div>
+
+  <div id="cj-title" style="margin-top:4px;font-size:13px;font-weight:bold;min-height:18px;"></div>
+
+  <!-- Cortinilla inicial (solo audio, solo para quien acaba de pulsar play) -->
+  <audio id="cj-intro" preload="none">
+    <source src="https://raw.githubusercontent.com/portalarioja-dev/crianza-joven/main/Crianza%20Joven.mp3" type="audio/mpeg" />
+  </audio>
+
+  <!-- Reproductor de YouTube oculto: solo nos interesa el audio -->
+  <div id="cj-yt-player" style="position:absolute;width:1px;height:1px;overflow:hidden;left:-9999px;"></div>
+
+</div>
+
+<script>
+(function () {
+  // ---------- CAMBIAR AQUÍ: tus 3 direcciones ----------
+  var JSON_URL_BASE = "https://raw.githubusercontent.com/portalarioja-dev/crianza-joven/main/playlist.json";
+  // (el logo y la cortinilla ya llevan su URL puesta arriba, en el HTML)
+  // ------------------------------------------------------
+
+  var statusEl = document.getElementById("cj-status");
+  var titleEl = document.getElementById("cj-title");
+  var playBtn = document.getElementById("cj-play-btn");
+  var introAudio = document.getElementById("cj-intro");
+
+  var ytPlayer = null;
+  var ytReady = false;
+  var pendingTick = null;
+  var tickTimer = null;
+  var lastPlaylist = null;   // el playlist.json más reciente que hemos leído
+  var lastIndex = null;      // en qué posición de esa lista estamos ahora mismo
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function cacheBustedUrl() {
+    return JSON_URL_BASE + (JSON_URL_BASE.indexOf("?") === -1 ? "?" : "&") + "t=" + Date.now();
+  }
+
+  function fetchPlaylist(callback) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", cacheBustedUrl(), true);
+    xhr.onload = function () {
+      if (xhr.status === 200) {
+        try {
+          callback(JSON.parse(xhr.responseText));
+        } catch (e) {
+          setStatus("Error leyendo la playlist.");
+        }
+      } else {
+        setStatus("No se pudo cargar la playlist.");
+      }
+    };
+    xhr.onerror = function () {
+      setStatus("No se pudo conectar.");
+    };
+    xhr.send();
+  }
+
+  // A partir del JSON, calcula qué vídeo debería sonar AHORA MISMO
+  // y en qué segundo exacto de ese vídeo, como si fuera una radio en directo.
+  function computeCurrentSpot(playlist) {
+    var now = Date.now() / 1000;
+    var elapsedInLoop = (now - playlist.generated_at) % playlist.total_duration;
+    if (elapsedInLoop < 0) elapsedInLoop += playlist.total_duration;
+
+    var acc = 0;
+    for (var i = 0; i < playlist.items.length; i++) {
+      var item = playlist.items[i];
+      if (elapsedInLoop < acc + item.duration) {
+        return {
+          item: item,
+          index: i,
+          offsetSeconds: Math.floor(elapsedInLoop - acc),
+          remainingSeconds: Math.ceil(acc + item.duration - elapsedInLoop),
+        };
+      }
+      acc += item.duration;
+    }
+    // Por si acaso hay algún desajuste de redondeo, nos vamos al primero.
+    var first = playlist.items[0];
+    return { item: first, index: 0, offsetSeconds: 0, remainingSeconds: first.duration };
+  }
+
+  // Si un vídeo ha sido borrado/privado justo durante esta vuelta (algo
+  // que puede pasar si añades o quitas vídeos de la playlist original),
+  // en lugar de quedarse en silencio, saltamos al siguiente de la lista.
+  // El "reloj compartido" se sigue corrigiendo solo en el próximo tick(),
+  // así que este salto no desincroniza a nadie de forma permanente.
+  function skipToNextAfterError() {
+    if (!lastPlaylist || lastIndex === null) return;
+    var items = lastPlaylist.items;
+    var nextIndex = (lastIndex + 1) % items.length;
+    var nextItem = items[nextIndex];
+    lastIndex = nextIndex;
+    titleEl.textContent = nextItem.title;
+    if (ytReady) {
+      loadAndPlay(nextItem.videoId, 0);
+    }
+  }
+
+  // Arranca un vídeo evitando el bloqueo de autoreproducción del navegador:
+  // lo carga silenciado (eso sí lo permite cualquier navegador) y le quita
+  // el silencio de inmediato.
+  function loadAndPlay(videoId, startSeconds) {
+    ytPlayer.mute();
+    ytPlayer.loadVideoById({ videoId: videoId, startSeconds: startSeconds });
+    setTimeout(function () {
+      ytPlayer.unMute();
+      ytPlayer.playVideo();
+    }, 300);
+  }
+
+  function tick() {
+    fetchPlaylist(function (playlist) {
+      if (!playlist.items || !playlist.items.length) {
+        setStatus("La playlist está vacía por ahora.");
+        return;
+      }
+      var spot = computeCurrentSpot(playlist);
+      lastPlaylist = playlist;
+      lastIndex = spot.index;
+      titleEl.textContent = spot.item.title;
+      setStatus("Sonando ahora:");
+
+      if (ytReady) {
+        loadAndPlay(spot.item.videoId, spot.offsetSeconds);
+      } else {
+        pendingTick = spot;
+      }
+
+      if (tickTimer) clearTimeout(tickTimer);
+      // Reprogramamos el siguiente "enganche" justo cuando este vídeo
+      // debería terminar, así siempre estamos sincronizados con el directo.
+      var waitMs = Math.max(1000, spot.remainingSeconds * 1000);
+      tickTimer = setTimeout(tick, waitMs);
+    });
+  }
+
+  function startAfterIntro() {
+    setStatus("Sintonizando la radio...");
+    tick();
+  }
+
+  // ---- Carga de la API de YouTube ----
+  // Si tu blog ya tiene otro reproductor que también usa YouTube, esta
+  // parte convive con él en vez de pisarlo: reutiliza la API si ya está
+  // cargada, y encadena los avisos en vez de sustituirlos.
+  function initYtPlayer() {
+    if (ytPlayer) return; // evita crear el reproductor dos veces
+    ytPlayer = new YT.Player("cj-yt-player", {
+      height: "1",
+      width: "1",
+      playerVars: {
+        autoplay: 0,
+        controls: 0,
+        disablekb: 1,
+        origin: window.location.protocol + "//" + window.location.hostname,
+      },
+      events: {
+        onReady: function () {
+          ytReady = true;
+          if (pendingTick) {
+            loadAndPlay(pendingTick.item.videoId, pendingTick.offsetSeconds);
+            pendingTick = null;
+          }
+        },
+        onError: function () {
+          // El vídeo que tocaba ya no existe (borrado/privado) -> saltamos
+          // al siguiente para no dejar un silencio, sin romper la sincronía.
+          skipToNextAfterError();
+        },
+      },
+    });
+  }
+
+  var previousYtReadyCallback = window.onYouTubeIframeAPIReady;
+  window.onYouTubeIframeAPIReady = function () {
+    if (typeof previousYtReadyCallback === "function") {
+      previousYtReadyCallback();
+    }
+    initYtPlayer();
+  };
+
+  if (window.YT && window.YT.Player) {
+    // La API ya estaba cargada (por este mismo widget u otro del blog).
+    initYtPlayer();
+  } else if (!document.querySelector('script[src*="youtube.com/iframe_api"]')) {
+    var tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.body.appendChild(tag);
+  }
+
+  // ---- Botón de play ----
+  playBtn.addEventListener("click", function () {
+    playBtn.disabled = true;
+    setStatus("Reproduciendo la cortinilla...");
+    introAudio.currentTime = 0;
+    introAudio.play().catch(function () {
+      // Si el navegador bloquea el audio, probamos igualmente a sintonizar.
+      startAfterIntro();
+    });
+  });
+
+  introAudio.addEventListener("ended", startAfterIntro);
+})();
+</script>
+
+</body>
+</html>
