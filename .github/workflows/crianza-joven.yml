@@ -32,4 +32,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
           GITHUB_REPO: ${{ secrets.GITHUB_REPO }}
           GITHUB_JSON_PATH: ${{ secrets.GITHUB_JSON_PATH }}
-        run: python scripts/generar_playlist_crianza_joven.py
+        run: python generar_playlist_crianza_joven.py
